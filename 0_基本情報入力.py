@@ -1,106 +1,195 @@
 # -*- coding: utf-8 -*-
 """
-0_Basic_Info_Input.py — UX プレミアム版
-============================================================
-* AI経営診断 GPT : 基本情報入力フォーム
-* 日本標準産業分類 (R5) 完全対応 / 外部 JSON マスタ
-* 追加 UX 改善点
-    - スキーマ検証を jsonschema で正式対応 (フォールバックあり)
-    - 商品概要リアルタイム文字数カウンタ (100〜200 文字範囲を色で示す)
-    - 入力完了率プログレスバー
-    - フォームをタブ UI で分割 (産業分類 / 事業情報)
-    - 保存ボタンはバリデーション OK 時のみ有効
+0_Basic_Info_Input.py — COPY‑PASTE 完全版
+----------------------------------------
+* 外部 JSON を廃止し、日本標準産業分類（令和5年改定・中分類99）を
+  コード内に直埋め。
+* UX：タブ分割 / 入力進捗バー / 文字数リアルタイムカラー表示。
 """
 from __future__ import annotations
-
-import importlib
-import json
 from pathlib import Path
-from typing import Dict, List, TypedDict, Any
+from typing import Dict, List, TypedDict
 
 import streamlit as st
 from config import init_page
 from ui_components import show_subtitle, show_back_to_top
 
-# ------------------------------------------------------------------
-# 0. 定数
-# ------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent
-MASTER_PATH = ROOT / "industry_master.json"
-NEXT_PAGE = "1_External_Analysis.py"
+# ========================================================================= #
+# 0. 産業分類 (大分類 → 中分類 list[dict(code,name)] )                      #
+# ========================================================================= #
+industry_major_mid: Dict[str, List[Dict[str, str]]] = {
+    "農業，林業": [
+        {"code": "01", "name": "農業"},
+        {"code": "02", "name": "林業"},
+    ],
+    "漁業": [
+        {"code": "03", "name": "漁業（水産養殖業を除く）"},
+        {"code": "04", "name": "水産養殖業"},
+    ],
+    "鉱業，採石業，砂利採取業": [
+        {"code": "05", "name": "鉱業，採石業，砂利採取業"},
+    ],
+    "建設業": [
+        {"code": "06", "name": "総合工事業"},
+        {"code": "07", "name": "職別工事業（設備工事業を除く）"},
+        {"code": "08", "name": "設備工事業"},
+    ],
+    "製造業": [
+        {"code": "09", "name": "食料品製造業"},
+        {"code": "10", "name": "飲料・たばこ・飼料製造業"},
+        {"code": "11", "name": "繊維工業"},
+        {"code": "12", "name": "木材・木製品製造業（家具を除く）"},
+        {"code": "13", "name": "家具・装備品製造業"},
+        {"code": "14", "name": "パルプ・紙・紙加工品製造業"},
+        {"code": "15", "name": "印刷・同関連業"},
+        {"code": "16", "name": "化学工業"},
+        {"code": "17", "name": "石油製品・石炭製品製造業"},
+        {"code": "18", "name": "プラスチック製品製造業（別掲を除く）"},
+        {"code": "19", "name": "ゴム製品製造業"},
+        {"code": "20", "name": "なめし革・同製品・毛皮製造業"},
+        {"code": "21", "name": "窯業・土石製品製造業"},
+        {"code": "22", "name": "鉄鋼業"},
+        {"code": "23", "name": "非鉄金属製造業"},
+        {"code": "24", "name": "金属製品製造業"},
+        {"code": "25", "name": "はん用機械器具製造業"},
+        {"code": "26", "name": "生産用機械器具製造業"},
+        {"code": "27", "name": "業務用機械器具製造業"},
+        {"code": "28", "name": "電子部品・デバイス・電子回路製造業"},
+        {"code": "29", "name": "電気機械器具製造業"},
+        {"code": "30", "name": "情報通信機械器具製造業"},
+        {"code": "31", "name": "輸送用機械器具製造業"},
+        {"code": "32", "name": "その他の製造業"},
+    ],
+    "電気・ガス・熱供給・水道業": [
+        {"code": "33", "name": "電気業"},
+        {"code": "34", "name": "ガス業"},
+        {"code": "35", "name": "熱供給業"},
+        {"code": "36", "name": "水道業"},
+    ],
+    "情報通信業": [
+        {"code": "37", "name": "通信業"},
+        {"code": "38", "name": "放送業"},
+        {"code": "39", "name": "情報サービス業"},
+        {"code": "40", "name": "インターネット附随サービス業"},
+        {"code": "41", "name": "映像・音声・文字情報制作業"},
+    ],
+    "運輸業，郵便業": [
+        {"code": "42", "name": "鉄道業"},
+        {"code": "43", "name": "道路旅客運送業"},
+        {"code": "44", "name": "道路貨物運送業"},
+        {"code": "45", "name": "水運業"},
+        {"code": "46", "name": "航空運輸業"},
+        {"code": "47", "name": "倉庫業"},
+        {"code": "48", "name": "運輸に附帯するサービス業"},
+        {"code": "49", "name": "郵便業（信書便事業を含む）"},
+    ],
+    "卸売業，小売業": [
+        {"code": "50", "name": "各種商品卸売業"},
+        {"code": "51", "name": "繊維・衣服等卸売業"},
+        {"code": "52", "name": "飲食料品卸売業"},
+        {"code": "53", "name": "建築材料，鉱物・金属材料等卸売業"},
+        {"code": "54", "name": "機械器具卸売業"},
+        {"code": "55", "name": "その他の卸売業"},
+        {"code": "56", "name": "各種商品小売業"},
+        {"code": "57", "name": "織物・衣服・身の回り品小売業"},
+        {"code": "58", "name": "飲食料品小売業"},
+        {"code": "59", "name": "機械器具小売業"},
+        {"code": "60", "name": "その他の小売業"},
+        {"code": "61", "name": "無店舗小売業"},
+    ],
+    "金融業，保険業": [
+        {"code": "62", "name": "銀行業"},
+        {"code": "63", "name": "協同組織金融業"},
+        {"code": "64", "name": "貸金業，クレジットカード業等非預金信用機関"},
+        {"code": "65", "name": "金融商品取引業，商品先物取引業"},
+        {"code": "66", "name": "補助的金融業等"},
+        {"code": "67", "name": "保険業（保険媒介代理業，保険サービス業を含む）"},
+    ],
+    "不動産業，物品賃貸業": [
+        {"code": "68", "name": "不動産取引業"},
+        {"code": "69", "name": "不動産賃貸業・管理業"},
+        {"code": "70", "name": "物品賃貸業"},
+    ],
+    "学術研究，専門・技術サービス業": [
+        {"code": "71", "name": "学術・開発研究機関"},
+        {"code": "72", "name": "専門サービス業（他に分類されないもの）"},
+        {"code": "73", "name": "広告業"},
+        {"code": "74", "name": "技術サービス業（他に分類されないもの）"},
+    ],
+    "宿泊業，飲食サービス業": [
+        {"code": "75", "name": "宿泊業"},
+        {"code": "76", "name": "飲食店"},
+        {"code": "77", "name": "持ち帰り・配達飲食サービス業"},
+    ],
+    "生活関連サービス業，娯楽業": [
+        {"code": "78", "name": "洗濯・理容・美容・浴場業"},
+        {"code": "79", "name": "その他の生活関連サービス業"},
+        {"code": "80", "name": "娯楽業"},
+    ],
+    "教育，学習支援業": [
+        {"code": "81", "name": "学校教育"},
+        {"code": "82", "name": "その他の教育・学習支援業"},
+    ],
+    "医療，福祉": [
+        {"code": "83", "name": "医療業"},
+        {"code": "84", "name": "保健衛生"},
+        {"code": "85", "name": "社会保険・社会福祉・介護事業"},
+    ],
+    "複合サービス事業": [
+        {"code": "86", "name": "郵便局"},
+        {"code": "87", "name": "協同組合（他に分類されないもの）"},
+    ],
+    "サービス業（他に分類されないもの）": [
+        {"code": "88", "name": "廃棄物処理業"},
+        {"code": "89", "name": "自動車整備業"},
+        {"code": "90", "name": "機械等修理業（別掲を除く）"},
+        {"code": "91", "name": "職業紹介・労働者派遣業"},
+        {"code": "92", "name": "その他の事業サービス業"},
+        {"code": "93", "name": "政治・経済・文化団体"},
+        {"code": "94", "name": "宗教"},
+        {"code": "95", "name": "その他のサービス業"},
+    ],
+    "公務（他に分類されるものを除く）": [
+        {"code": "96", "name": "外国公務"},
+        {"code": "97", "name": "国家公務"},
+        {"code": "98", "name": "地方公務"},
+    ],
+    "分類不能の産業": [
+        {"code": "99", "name": "分類不能の産業"},
+    ],
+}
 
-# ------------------------------------------------------------------
-# 1. ページ / CSS
-# ------------------------------------------------------------------
+# ------------------------------------------------------------------ #
+# 1. 基本設定・定数
+# ------------------------------------------------------------------ #
+ROOT       = Path(__file__).resolve().parent
+NEXT_PAGE  = "1_External_Analysis.py"   #  次ページが無ければ無視されます
+
+# 入力選択肢
+CUSTOMERS = ["BtoC (一般)","BtoB (企業)","高齢者","若年層","インバウンド"]
+PRICES    = ["低価格帯","中価格帯","高価格帯"]
+CHANNELS  = ["店舗型","訪問サービス","オンライン","店舗＋オンライン"]
+JP_MAP    = str.maketrans("０１２３４５６７８９．，", "0123456789..")
+
+# ------------------------------------------------------------------ #
+# 2. ページ初期化 & CSS
+# ------------------------------------------------------------------ #
 init_page(title="AI経営診断 – 基本情報入力")
 
 st.markdown(
     """
 <style>
-.char-count {
-  font-size: 0.85em;
-  margin-top: -0.3rem;
-}
-.char-ok   { color: #4caf50; }
-.char-warn { color: #f9a825; }
-.char-err  { color: #e53935; }
+.char-count{font-size:.85em;margin-top:-.3rem}
+.char-ok{color:#4caf50}.char-warn{color:#f9a825}.char-err{color:#e53935}
+.required:after{content:" *";color:#e53935;font-weight:700}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-# ------------------------------------------------------------------
-# 2. JSON マスタロード & 検証
-# ------------------------------------------------------------------
-SCHEMA = {
-    "type": "object",
-    "patternProperties": {
-        ".*": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["code", "name"],
-                "properties": {"code": {"type": "string"}, "name": {"type": "string"}},
-            },
-        }
-    },
-}
-
-@st.cache_data(show_spinner="⚙️ 産業分類マスタをロード中…")
-def load_master(path: Path) -> Dict[str, List[Dict[str, str]]]:
-    if not path.exists():
-        st.error("❌ industry_master.json が見つかりません")
-        st.stop()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        st.error(f"❌ JSON 解析エラー: {exc}")
-        st.stop()
-
-    try:
-        jsonschema = importlib.import_module("jsonschema")
-        jsonschema.validate(data, SCHEMA)  # type: ignore[attr-defined]
-    except ModuleNotFoundError:
-        # fallback 簡易検証
-        for major, mids in data.items():
-            if not mids:
-                st.error(f"❌ '{major}' に中分類がありません")
-                st.stop()
-            for d in mids:
-                if not {"code", "name"}.issubset(d):
-                    st.error(f"❌ スキーマ不整合: {d}")
-                    st.stop()
-    except Exception as exc:
-        st.error(f"❌ スキーマバリデーション失敗: {exc}")
-        st.stop()
-    return data
-
-industry_major_mid = load_master(MASTER_PATH)
-major_opts = list(industry_major_mid.keys())
-
-# ------------------------------------------------------------------
-# 3. 型 & SessionState
-# ------------------------------------------------------------------
+# ------------------------------------------------------------------ #
+# 3. Session State
+# ------------------------------------------------------------------ #
 class UI(TypedDict, total=False):
     業種_大分類: str
     業種_中分類: str
@@ -112,103 +201,83 @@ class UI(TypedDict, total=False):
     販売方法: str
 
 ui: UI = st.session_state.setdefault("user_input", UI())  # type: ignore[arg-type]
-errors: Dict[str, str] = st.session_state.setdefault("errors", {})
+errors: Dict[str,str] = st.session_state.setdefault("errors", {})
 
-# 初期値
+major_opts = list(industry_major_mid.keys())
 ui.setdefault("業種_大分類", major_opts[0])
 ui.setdefault("業種_中分類", industry_major_mid[major_opts[0]][0]["code"])
 ui.setdefault("mid_display", "コード＋名称")
 
-# 定数
-CUSTOMERS = ["BtoC (一般)", "BtoB (企業)", "高齢者", "若年層", "インバウンド"]
-PRICES = ["低価格帯", "中価格帯", "高価格帯"]
-CHANNELS = ["店舗型", "訪問サービス", "オンライン", "店舗＋オンライン"]
-
-# バリデーション util ----------------------------------------------
-JP_MAP = str.maketrans("０１２３４５６７８９．，", "0123456789..")
-
-def to_half(txt: str) -> str:
-    return txt.translate(JP_MAP).replace(",", "").replace("，", "").strip()
-
-def count_chars(s: str) -> int:
-    return len(s)  # マルチバイトも 1
-
-def validate() -> Dict[str, str]:
-    e: Dict[str, str] = {}
-    req = ["業種_大分類", "業種_中分類", "地域", "主な商品・サービス", "顧客層", "価格帯", "販売方法"]
+# ------------------------------------------------------------------ #
+# 4. Utils (validation)
+# ------------------------------------------------------------------ #
+def char_len(s:str)->int: return len(s)
+def validate()->Dict[str,str]:
+    e:Dict[str,str]={}
+    req=["業種_大分類","業種_中分類","地域",
+         "主な商品・サービス","顧客層","価格帯","販売方法"]
     for k in req:
-        if not ui.get(k):
-            e[k] = "必須入力です"
-    if isinstance(ui.get("顧客層"), list) and not ui["顧客層"]:
-        e["顧客層"] = "1 つ以上選択してください"
-    prod = ui.get("主な商品・サービス", "")
-    if prod and not (100 <= count_chars(prod) <= 200):
-        e["主な商品・サービス"] = "100〜200文字で入力"
+        if not ui.get(k): e[k]="必須入力"
+    if isinstance(ui.get("顧客層"),list) and not ui["顧客層"]:
+        e["顧客層"]="1 つ以上選択"
+    prod=ui.get("主な商品・サービス","")
+    if prod and not (100<=char_len(prod)<=200):
+        e["主な商品・サービス"]="100〜200文字で入力"
     return e
 
-# プログレス計算 ------------------------------------------------------
-TOTAL_REQUIRED = 7
-filled = sum(1 for k in ["業種_大分類", "業種_中分類", "地域", "主な商品・サービス", "顧客層", "価格帯", "販売方法"] if ui.get(k))
-progress = filled / TOTAL_REQUIRED
-
-# ------------------------------------------------------------------
-# 4. UI
-# ------------------------------------------------------------------
+# ------------------------------------------------------------------ #
+# 5. UI 描画
+# ------------------------------------------------------------------ #
 show_subtitle("🏢 基本情報入力")
-
+REQUIRED=7
+progress = sum(bool(ui.get(k)) for k in
+               ["業種_大分類","業種_中分類","地域",
+                "主な商品・サービス","顧客層","価格帯","販売方法"])/REQUIRED
 st.progress(progress, text=f"入力完了度 {int(progress*100)}%")
 
-tab_major, tab_biz = st.tabs(["産業分類選択", "事業情報入力"])
+tab_major, tab_biz = st.tabs(["産業分類","事業情報"])
 
-with st.form("basic_form"):
-    with tab_major:
-        st.markdown("### 産業分類 *")
-        ui["mid_display"] = st.radio("表示形式", ["コード＋名称", "コードのみ"], horizontal=True)
-        ui["業種_大分類"] = st.selectbox("大分類", major_opts, index=major_opts.index(ui["業種_大分類"]))
-        mids = industry_major_mid[ui["業種_大分類"]]
-        labels = [d["code"] if ui["mid_display"] == "コードのみ" else f"{d['code']} {d['name']}" for d in mids]
-        sel = next((i for i,d in enumerate(mids) if d["code"]==ui["業種_中分類"]), 0)
-        choice = st.selectbox("中分類", labels, index=sel)
-        ui["業種_中分類"] = choice.split()[0]
+with tab_major:
+    st.markdown("#### 産業分類")
+    ui["mid_display"]=st.radio("表示形式",["コード＋名称","コードのみ"],
+                                horizontal=True)
+    ui["業種_大分類"]=st.selectbox("大分類",major_opts,
+                                 index=major_opts.index(ui["業種_大分類"]))
+    mids=industry_major_mid[ui["業種_大分類"]]
+    labels=[d["code"] if ui["mid_display"]=="コードのみ"
+            else f"{d['code']} {d['name']}" for d in mids]
+    sel=next((i for i,d in enumerate(mids) if d["code"]==ui["業種_中分類"]),0)
+    choice=st.selectbox("中分類",labels,index=sel)
+    ui["業種_中分類"]=choice.split()[0]
 
-    with tab_biz:
-        st.markdown("### 事業情報 *")
-        ui["地域"] = st.text_input("所在地（市区町村）", ui.get("地域", ""))
+with tab_biz:
+    st.markdown("#### 事業情報")
+    ui["地域"]=st.text_input("所在地（市区町村）",ui.get("地域",""))
+    prod=st.text_area("商品・サービス概要 (100〜200字)",
+                      ui.get("主な商品・サービス",""),height=110)
+    ui["主な商品・サービス"]=prod
+    length=char_len(prod)
+    cls="char-ok" if 100<=length<=200 else ("char-warn" if length else "char-err")
+    st.markdown(f"<span class='char-count {cls}'>現在 {length} 文字</span>",
+                unsafe_allow_html=True)
 
-        prod = st.text_area("商品・サービス概要 (100〜200字)", ui.get("主な商品・サービス", ""), height=100, key="prod_text")
-        ui["主な商品・サービス"] = prod
-        char_len = count_chars(prod)
-        if char_len == 0:
-            cls = "char-err"
-        elif 100 <= char_len <= 200:
-            cls = "char-ok"
-        else:
-            cls = "char-warn"
-        st.markdown(f"<span class='char-count {cls}'>現在 {char_len} 文字</span>", unsafe_allow_html=True)
+    ui["顧客層"]=st.multiselect("主な顧客層",CUSTOMERS,
+                                 default=ui.get("顧客層",[]))
+    ui["価格帯"]=st.radio("価格帯",PRICES,
+                           index=PRICES.index(ui.get("価格帯",PRICES[1])))
+    ui["販売方法"]=st.radio("販売方法",CHANNELS,
+                           index=CHANNELS.index(ui.get("販売方法",CHANNELS[0])))
 
-        ui["顧客層"] = st.multiselect("主な顧客層", CUSTOMERS, default=ui.get("顧客層", []))
-        ui["価格帯"] = st.radio("価格帯", PRICES, index=PRICES.index(ui.get("価格帯", PRICES[1])))
-        ui["販売方法"] = st.radio("販売方法", CHANNELS, index=CHANNELS.index(ui.get("販売方法", CHANNELS[0])))
+errors.clear(); errors.update(validate())
+for f,msg in errors.items():
+    st.write(f"<span class='field-error'>{f}: {msg}</span>",unsafe_allow_html=True)
 
-    submitted = st.form_submit_button("💾 保存", disabled=bool(validate()))
-
-# ------------------------------------------------------------------
-if submitted:
-    errors.clear()
-    # validate() 呼び出しは disabled 状態で空想定だが安全に
-    errors.update(validate())
-    if errors:
-        st.error("⚠️ 入力不備があります")
+if st.button("💾 保存",disabled=bool(errors)):
+    st.session_state["user_input"]=ui
+    st.success("✅ 保存しました")
+    if (Path(__file__).resolve().parent / NEXT_PAGE).exists():
+        st.button("👉 次へ進む",on_click=lambda: st.switch_page(NEXT_PAGE))
     else:
-        st.session_state["user_input"] = ui
-        st.success("✅ 保存しました")
-        if (ROOT / NEXT_PAGE).exists():
-            st.button("👉 次へ進む", on_click=lambda: st.switch_page(NEXT_PAGE))
-        else:
-            st.warning("次ページが見つかりません")
-
-# エラー表示
-for k, msg in errors.items():
-    st.write(f"<span class='field-error'>{k}: {msg}</span>", unsafe_allow_html=True)
+        st.warning("次ページが見つかりません")
 
 show_back_to_top()
