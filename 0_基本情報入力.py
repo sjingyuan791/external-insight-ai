@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-0_Basic_Info_Input.py
----------------------
-AI経営診断GPT – 基本情報入力フォーム（完全版）
-------------------------------------------------
-機能:
-    1. 日本標準産業分類 (大分類20区分 × 中分類99コード) を外部マスタ (JSON or CSV) からロード
-    2. 大分類ドロップダウン → 中分類ドロップダウン (コードのみ / コード+名称 切替可)
-    3. 必須入力チェック & 文字数・数値バリデーション
-    4. 顧客層 / 価格帯 / 販売方法 を選択式 UI で追加
-    5. 入力保存 & SessionState 管理
+0_Basic_Info_Input.py — フルリファクタ版
+============================================================
+* AI経営診断 GPT : 基本情報入力フォーム
+* 日本標準産業分類（R5 改定）完全対応
+* 改善ポイント（★3 優先まで）をすべて実装
+    1. 外部 JSON マスタ読み込み + スキーマ検証 + cache_data
+    2. コードのみ / コード+名称 表示切替
+    3. 必須 multiselect の min 選択チェック
+    4. 文字数・数値バリデーション強化
+    5. 残存タスク用に INT_FIELDS 汎用バリデータ
 """
 from __future__ import annotations
 
@@ -27,46 +27,58 @@ from ui_components import show_subtitle, show_back_to_top
 init_page(title="AI経営診断 – 基本情報入力")
 
 # ------------------------------------------------------------------
-# 2. 産業分類マスタのロード
+# 2. 産業分類マスタロード & 検証
 # ------------------------------------------------------------------
-MASTER_PATH = pathlib.Path(__file__).parent / "industry_master.json"  # ← JSON 版を想定
+MASTER_PATH = pathlib.Path(__file__).parent / "industry_master.json"
 
-if not MASTER_PATH.exists():
-    st.error("産業分類マスタ (industry_master.json) が見つかりません。配置を確認してください。")
-    st.stop()
+@st.cache_data(show_spinner="産業分類マスタをロード中…")
+def load_master(path: pathlib.Path) -> Dict[str, List[Dict[str, str]]]:
+    if not path.exists():
+        st.error("❌ 産業分類マスタ (industry_master.json) が見つかりません")
+        st.stop()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        st.error(f"❌ JSON 解析エラー: {exc}")
+        st.stop()
+    # スキーマ簡易検証
+    for major, mids in data.items():
+        if not isinstance(mids, list) or not mids:
+            st.error(f"❌ '{major}' の中分類がリスト形式で定義されていません")
+            st.stop()
+        for d in mids:
+            if not {"code", "name"}.issubset(d):
+                st.error(f"❌ 中分類辞書に code / name キーが不足: {d}")
+                st.stop()
+    return data
 
-with MASTER_PATH.open("r", encoding="utf-8") as fp:
-    industry_major_mid: Dict[str, List[Dict[str, str]]] = json.load(fp)
-
+industry_major_mid = load_master(MASTER_PATH)
 major_options = list(industry_major_mid.keys())
 
 # ------------------------------------------------------------------
 # 3. セッションステート初期化
 # ------------------------------------------------------------------
-if "user_input" not in st.session_state:
-    st.session_state["user_input"] = {}
-if "errors" not in st.session_state:
-    st.session_state["errors"] = {}
-ui = st.session_state["user_input"]
-errors = st.session_state["errors"]
+ui: Dict[str, any] = st.session_state.setdefault("user_input", {})
+errors: Dict[str, str] = st.session_state.setdefault("errors", {})
 
-# デフォルト値
 ui.setdefault("業種_大分類", major_options[0])
 ui.setdefault("業種_中分類", industry_major_mid[major_options[0]][0]["code"])
-ui.setdefault("mid_display_mode", "コード＋名称")  # 表示切替デフォルト
+ui.setdefault("mid_display_mode", "コード＋名称")
 
 # ------------------------------------------------------------------
-# 4. 各種定数
+# 4. 定数
 # ------------------------------------------------------------------
-CUSTOMER_SEGMENTS = ["BtoC (一般消費者)", "BtoB (企業向け)", "高齢者", "若年層", "インバウンド客"]
+CUSTOMER_SEGMENTS = [
+    "BtoC (一般消費者)", "BtoB (企業向け)", "高齢者", "若年層", "インバウンド客"
+]
 PRICE_RANGES = ["低価格帯", "中価格帯", "高価格帯"]
 CHANNELS = ["店舗型", "訪問サービス", "オンライン", "店舗＋オンライン"]
 
-INT_FIELDS = []  # 数値バリデーション対象があれば追加
+INT_FIELDS: List[str] = []  # 将来拡張用
 JP_NUM_MAP = str.maketrans("０１２３４５６７８９．，", "0123456789..")
 
 # ------------------------------------------------------------------
-# 5. バリデーション関数
+# 5. バリデーション
 # ------------------------------------------------------------------
 
 def to_half(v: str) -> str:
@@ -82,14 +94,20 @@ def is_int(v: str) -> bool:
 def validate_all() -> Dict[str, str]:
     e: Dict[str, str] = {}
     # 必須チェック
-    for k in ["業種_大分類", "業種_中分類", "地域", "主な商品・サービス", "顧客層", "価格帯", "販売方法"]:
-        if not str(ui.get(k, "")).strip():
+    required = [
+        "業種_大分類", "業種_中分類", "地域", "主な商品・サービス", "顧客層", "価格帯", "販売方法"
+    ]
+    for k in required:
+        if not ui.get(k):
             e[k] = "必須入力です"
-    # 文字数チェック
+    # 商品概要 100〜200字
     prod = ui.get("主な商品・サービス", "")
     if prod and not (100 <= len(prod) <= 200):
         e["主な商品・サービス"] = "100〜200文字で入力してください"
-    # 数値チェック (例があれば)
+    # 顧客層最低1選択
+    if not ui.get("顧客層"):
+        e["顧客層"] = "少なくとも1つ選択してください"
+    # 数値系
     for k in INT_FIELDS:
         v = ui.get(k, "")
         if v and not is_int(v):
@@ -97,7 +115,7 @@ def validate_all() -> Dict[str, str]:
     return e
 
 # ------------------------------------------------------------------
-# 6. UI 表示
+# 6. UI
 # ------------------------------------------------------------------
 show_subtitle("🏢 基本情報入力")
 
@@ -105,38 +123,44 @@ with st.form("form_basic_info"):
     st.markdown('<div class="form-section">', unsafe_allow_html=True)
     st.markdown("#### 産業分類の選択 *")
 
-    # 表示モード切替
-    ui["mid_display_mode"] = st.radio("中分類表示形式", ["コード＋名称", "コードのみ"], horizontal=True)
-
-    # 大分類
-    ui["業種_大分類"] = st.selectbox("業種（大分類）", major_options, index=major_options.index(ui["業種_大分類"]))
-
-    # 中分類リスト生成
+    ui["mid_display_mode"] = st.radio(
+        "中分類表示形式", ["コード＋名称", "コードのみ"], horizontal=True
+    )
+    ui["業種_大分類"] = st.selectbox(
+        "業種（大分類）", major_options, index=major_options.index(ui["業種_大分類"])
+    )
     mids = industry_major_mid[ui["業種_大分類"]]
-    if ui["mid_display_mode"] == "コードのみ":
-        mid_labels = [d["code"] for d in mids]
-    else:
-        mid_labels = [f"{d['code']} {d['name']}" for d in mids]
-    default_mid = next((i for i, d in enumerate(mids) if d["code"] == ui["業種_中分類"]), 0)
-    choice = st.selectbox("業種（中分類）", mid_labels, index=default_mid)
-    # 選択結果からコードを抽出
+    mid_labels = (
+        [d["code"] for d in mids]
+        if ui["mid_display_mode"] == "コードのみ"
+        else [f"{d['code']} {d['name']}" for d in mids]
+    )
+    sel_idx = next((i for i, d in enumerate(mids) if d["code"] == ui["業種_中分類"]), 0)
+    choice = st.selectbox("業種（中分類）", mid_labels, index=sel_idx)
     ui["業種_中分類"] = choice.split()[0]
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
+    # 事業情報
     st.markdown('<div class="form-section">', unsafe_allow_html=True)
     st.markdown("#### 事業情報 *")
 
-    ui["地域"] = st.text_input("所在地（市区町村）", value=ui.get("地域", ""))
-    ui["主な商品・サービス"] = st.text_area("商品・サービス概要 (100〜200字)", value=ui.get("主な商品・サービス", ""), height=90)
+    ui["地域"] = st.text_input("所在地（市区町村）", ui.get("地域", ""))
+    ui["主な商品・サービス"] = st.text_area(
+        "商品・サービス概要 (100〜200字)", ui.get("主な商品・サービス", ""), height=90
+    )
 
-    ui["顧客層"] = st.multiselect("主な顧客層", CUSTOMER_SEGMENTS, default=ui.get("顧客層", []))
-    ui["価格帯"] = st.radio("価格帯", PRICE_RANGES, index=PRICE_RANGES.index(ui.get("価格帯", PRICE_RANGES[1])))
-    ui["販売方法"] = st.radio("販売方法", CHANNELS, index=CHANNELS.index(ui.get("販売方法", CHANNELS[0])))
+    ui["顧客層"] = st.multiselect(
+        "主な顧客層", CUSTOMER_SEGMENTS, default=ui.get("顧客層", [])
+    )
+    ui["価格帯"] = st.radio(
+        "価格帯", PRICE_RANGES, index=PRICE_RANGES.index(ui.get("価格帯", PRICE_RANGES[1]))
+    )
+    ui["販売方法"] = st.radio(
+        "販売方法", CHANNELS, index=CHANNELS.index(ui.get("販売方法", CHANNELS[0]))
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    submitted = st.form_submit_button("保存", type="primary")
+    submitted = st.form_submit_button("💾 保存", type="primary")
 
 # ------------------------------------------------------------------
 # 7. 保存処理
@@ -147,15 +171,12 @@ if submitted:
     if errors:
         st.error("⚠️ 入力内容に不備があります。赤字メッセージをご確認ください。")
     else:
-        st.success("✅ 基本情報を保存しました。次ステップへ進めます。")
         st.session_state["user_input"] = ui
         st.session_state.pop("errors", None)
+        st.success("✅ 基本情報を保存しました。次ステップへ進めます。")
 
-# エラー表示（リアルタイム）
+# エラー表示
 for field, msg in errors.items():
     st.write(f"<span class='field-error'>{field}: {msg}</span>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------
-# 8. ページ下部に戻るボタン
-# ------------------------------------------------------------------
 show_back_to_top()
