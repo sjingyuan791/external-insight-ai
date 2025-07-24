@@ -187,7 +187,7 @@ def load_city_master(filepath: str) -> pd.DataFrame:
     df = df[["都道府県名", "都道府県コード", "市区町村名", "市区町村コード"]]
     return df
 
-city_master = load_city_master("/mnt/data/000925835.xlsx")
+city_master = load_city_master("/mnt/data/city_master.xlsx")
 
 # --- State
 class UI(TypedDict, total=False):
