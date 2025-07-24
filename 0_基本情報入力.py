@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-0_Basic_Info_Input.py — FINAL COPY‑PASTE VERSION
------------------------------------------------
-* 外部ファイル完全排除
-* 産業分類99コード直埋め
-* 高 UX: 進捗バー / 文字数カウンタ / Sticky Action Bar
+0_Basic_Info_Input.py — FINAL 市区町村セレクトボックス対応
+----------------------------------------------------------
+・市区町村はExcelから都道府県→市区町村のセレクト方式
+・API連携/自動化のため pref_code, city_code も保存
 """
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, TypedDict
 
 import streamlit as st
+import pandas as pd
 from config import init_page
 from ui_components import show_subtitle, show_back_to_top
 
@@ -159,44 +159,45 @@ industry_major_mid: Dict[str, List[Dict[str, str]]] = {
     ],
 }
 
-# ============================================================= #
-# 1. 定数・初期設定
-# ============================================================= #
 ROOT      = Path(__file__).resolve().parent
-NEXT_PAGE = "1_External_Analysis.py"           # 次ページが無ければ無視
+NEXT_PAGE = "1_External_Analysis.py"
 CUSTOMERS = ["BtoC (一般)","BtoB (企業)","高齢者","若年層","インバウンド"]
 PRICES    = ["低価格帯","中価格帯","高価格帯"]
 CHANNELS  = ["店舗型","訪問サービス","オンライン","店舗＋オンライン"]
-INT_FIELDS= ["従業員数"]                       # 数値検証対象
+INT_FIELDS= ["従業員数"]
 JP_MAP    = str.maketrans("０１２３４５６７８９．，", "0123456789..")
 
 init_page(title="AI経営診断 – 基本情報入力")
 
-# ------------------------------------------------------------- #
-# 2. 追加 CSS（エラー表示・Sticky Bar・カウンタ）
-# ------------------------------------------------------------- #
 st.markdown("""
 <style>
-/* カウンタ */
 .char-count{font-size:.85em;margin-top:-.25rem}
 .char-ok{color:#4caf50}.char-warn{color:#f9a825}.char-err{color:#e53935}
-/* エラー行 */
 .field-error{color:#e53935;font-size:.9em;margin:0 0 4px 0}
-/* Sticky Action Bar */
 .sticky{position:fixed;bottom:0;left:0;width:100%;padding:.7rem 1rem;
 background:#ffffffee;backdrop-filter:blur(6px);box-shadow:0 -1px 6px rgba(0,0,0,.1)}
 .sticky .stButton>button{width:100%;font-weight:700}
 </style>
 """, unsafe_allow_html=True)
 
-# ------------------------------------------------------------- #
-# 3. State & 型定義
-# ------------------------------------------------------------- #
+# --- 市区町村マスタ読込
+@st.cache_data
+def load_city_master(filepath: str) -> pd.DataFrame:
+    df = pd.read_excel(filepath, dtype=str)
+    df = df[["都道府県名", "都道府県コード", "市区町村名", "市区町村コード"]]
+    return df
+
+city_master = load_city_master("/mnt/data/000925835.xlsx")
+
+# --- State
 class UI(TypedDict, total=False):
     業種_大分類: str
     業種_中分類: str
     mid_display: str
-    地域: str
+    pref_name: str
+    city_name: str
+    pref_code: str
+    city_code: str
     主な商品・サービス: str
     顧客層: List[str]
     価格帯: str
@@ -210,10 +211,10 @@ major_opts = list(industry_major_mid.keys())
 ui.setdefault("業種_大分類", major_opts[0])
 ui.setdefault("業種_中分類", industry_major_mid[major_opts[0]][0]["code"])
 ui.setdefault("mid_display", "コード＋名称")
+ui.setdefault("pref_name", city_master["都道府県名"].iloc[0])
+ui.setdefault("city_name", city_master[city_master["都道府県名"]==ui["pref_name"]]["市区町村名"].iloc[0])
 
-# ------------------------------------------------------------- #
-# 4. バリデーション
-# ------------------------------------------------------------- #
+# ---- バリデーション
 def to_half(v:str)->str:
     return v.translate(JP_MAP).replace(",","").replace("，","").strip()
 def is_int(v:str)->bool:
@@ -223,7 +224,7 @@ def char_len(s:str)->int:
 
 def validate()->Dict[str,str]:
     e:Dict[str,str]={}
-    req=["業種_大分類","業種_中分類","地域",
+    req=["業種_大分類","業種_中分類","pref_name","city_name",
          "主な商品・サービス","顧客層","価格帯","販売方法"]
     for k in req:
         if not ui.get(k): e[k]="必須入力です"
@@ -236,26 +237,19 @@ def validate()->Dict[str,str]:
         if ui.get(f) and not is_int(ui[f]): e[f]="整数で入力してください"
     return e
 
-# ------------------------------------------------------------- #
-# 5. 進捗バー
-# ------------------------------------------------------------- #
-REQ_KEYS = ["業種_大分類","業種_中分類","地域",
+# ---- プログレスバー
+REQ_KEYS = ["業種_大分類","業種_中分類","pref_name","city_name",
             "主な商品・サービス","顧客層","価格帯","販売方法"]
 progress = sum(bool(ui.get(k)) for k in REQ_KEYS)/len(REQ_KEYS)
 st.progress(progress, text=f"入力完了度 {int(progress*100)}%")
 
-# ------------------------------------------------------------- #
-# 6. UI 本体
-# ------------------------------------------------------------- #
 show_subtitle("🏢 基本情報入力")
 
 tab_major, tab_biz = st.tabs(["産業分類","事業情報"])
 
 with tab_major:
-    ui["mid_display"] = st.radio("表示形式",["コード＋名称","コードのみ"],
-                                  horizontal=True)
-    ui["業種_大分類"] = st.selectbox("大分類", major_opts,
-                                   index=major_opts.index(ui["業種_大分類"]))
+    ui["mid_display"] = st.radio("表示形式",["コード＋名称","コードのみ"], horizontal=True)
+    ui["業種_大分類"] = st.selectbox("大分類", major_opts, index=major_opts.index(ui["業種_大分類"]))
     mids = industry_major_mid[ui["業種_大分類"]]
     labels = [d["code"] if ui["mid_display"]=="コードのみ"
               else f"{d['code']} {d['name']}" for d in mids]
@@ -264,30 +258,33 @@ with tab_major:
     ui["業種_中分類"] = choice.split()[0]
 
 with tab_biz:
-    col1,col2 = st.columns(2)
+    col1, col2 = st.columns(2)
     with col1:
-        ui["地域"] = st.text_input("所在地（市区町村）", ui.get("地域",""))
-        ui["従業員数"] = st.text_input("従業員数", ui.get("従業員数",""),
-                                      placeholder="例) 10")
+        # 都道府県・市区町村ドロップダウン
+        pref_name = st.selectbox("都道府県", sorted(city_master["都道府県名"].unique()),
+                                 index=list(city_master["都道府県名"].unique()).index(ui["pref_name"]))
+        cities = city_master[city_master["都道府県名"]==pref_name]["市区町村名"].unique()
+        city_name = st.selectbox("市区町村", sorted(cities),
+                                 index=list(cities).index(ui["city_name"]) if ui["city_name"] in cities else 0)
+        ui["pref_name"] = pref_name
+        ui["city_name"] = city_name
+        # コードを自動取得
+        ui["pref_code"] = city_master[city_master["都道府県名"]==pref_name]["都道府県コード"].values[0]
+        ui["city_code"] = city_master[(city_master["都道府県名"]==pref_name) & (city_master["市区町村名"]==city_name)]["市区町村コード"].values[0]
+
+        ui["従業員数"] = st.text_input("従業員数", ui.get("従業員数",""), placeholder="例) 10")
     with col2:
-        prod = st.text_area("商品・サービス概要 (100〜200字)",
-                            ui.get("主な商品・サービス",""), height=110)
+        prod = st.text_area("商品・サービス概要 (100〜200字)", ui.get("主な商品・サービス",""), height=110)
         ui["主な商品・サービス"] = prod
         L = char_len(prod)
         cls = "char-ok" if 100<=L<=200 else ("char-warn" if L else "char-err")
-        st.markdown(f"<span class='char-count {cls}'>現在 {L} 文字</span>",
-                    unsafe_allow_html=True)
+        st.markdown(f"<span class='char-count {cls}'>現在 {L} 文字</span>", unsafe_allow_html=True)
 
-    ui["顧客層"]   = st.multiselect("主な顧客層", CUSTOMERS,
-                                   default=ui.get("顧客層", []))
-    ui["価格帯"]   = st.radio("価格帯", PRICES,
-                             index=PRICES.index(ui.get("価格帯",PRICES[1])))
-    ui["販売方法"] = st.radio("販売方法", CHANNELS,
-                             index=CHANNELS.index(ui.get("販売方法",CHANNELS[0])))
+    ui["顧客層"]   = st.multiselect("主な顧客層", CUSTOMERS, default=ui.get("顧客層", []))
+    ui["価格帯"]   = st.radio("価格帯", PRICES, index=PRICES.index(ui.get("価格帯",PRICES[1])))
+    ui["販売方法"] = st.radio("販売方法", CHANNELS, index=CHANNELS.index(ui.get("販売方法",CHANNELS[0])))
 
-# ------------------------------------------------------------- #
-# 7. エラー表示 & Sticky Action Bar
-# ------------------------------------------------------------- #
+# ---- エラー表示 & Sticky Action Bar
 errors.clear(); errors.update(validate())
 for k,msg in errors.items():
     st.markdown(f"<div class='field-error'>{k}: {msg}</div>",unsafe_allow_html=True)
@@ -296,8 +293,7 @@ def save():
     st.session_state["user_input"] = ui
     st.success("✅ 入力を保存しました")
 
-st.markdown("<div style='height:70px'></div>", unsafe_allow_html=True)  # spacer
-
+st.markdown("<div style='height:70px'></div>", unsafe_allow_html=True)
 st.markdown("<div class='sticky'>", unsafe_allow_html=True)
 c1,c2 = st.columns(2)
 with c1:
